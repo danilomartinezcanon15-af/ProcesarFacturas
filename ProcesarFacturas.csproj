@@ -13,6 +13,7 @@
     <PackageReference Include="ClosedXML" Version="0.104.2" />
     <PackageReference Include="ExcelDataReader" Version="3.9.0" />
     <PackageReference Include="ExcelDataReader.DataSet" Version="3.9.0" />
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="7.1.0" />
     <PackageReference Include="NetOfficeFw.Office" Version="1.9.11" />
     <PackageReference Include="NetOfficeFw.Outlook" Version="1.9.11" />
   </ItemGroup>

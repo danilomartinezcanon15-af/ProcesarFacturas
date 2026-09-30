@@ -1,4 +1,7 @@
-﻿using ProcesarFacturas.Models;
+﻿using System;
+using System.Collections.Generic;
+using System.IO;
+using ProcesarFacturas.Models;
 using ProcesarFacturas.Services;
 
 namespace ProcesarFacturas
@@ -8,17 +11,16 @@ namespace ProcesarFacturas
         static void Main(string[] args)
         {
             var logger = new LoggerService();
-            logger.RegistrarInfo("=== INICIANDO PROCESO DE FACTURAS ===");
+            logger.RegistrarInfo("=== INICIANDO PROCESO DE FACTURAS (MODO SQL SERVER) ===");
 
             try
             {
                 string rutaBase = AppDomain.CurrentDomain.BaseDirectory;
                 string rutaTemp = Path.Combine(rutaBase, "Temp");
-                string rutaExcelDestino = Path.Combine(rutaBase, "Formato_Para_Cargues_P&G.xlsx");
 
                 var outlookReader = new OutlookReader();
                 var excelReader = new ExcelReader();
-                var excelWriter = new ExcelWriter(rutaExcelDestino);
+                var shiptoService = new ShiptoService();
 
                 logger.RegistrarInfo("Descargando adjuntos de Outlook...");
                 var mensajes = outlookReader.DescargarMensajesConAdjuntos(rutaTemp, logger, incluirProcesados: true);
@@ -59,16 +61,26 @@ namespace ProcesarFacturas
                     string entryId = kvp.Key;
                     var registros = kvp.Value;
 
-                    int agregados = excelWriter.AgregarEnHojaDbShipto("Db_Shipto", registros);
+                    int agregadosEnEsteCorreo = 0;
 
-                    if (agregados > 0)
+                    foreach (var reg in registros)
                     {
-                        totalProcesados += agregados;
+                        // Intentar guardar en la base de datos SQL Server
+                        bool guardado = shiptoService.GuardarNuevoShipto(reg);
+                        if (guardado)
+                        {
+                            agregadosEnEsteCorreo++;
+                        }
+                    }
+
+                    if (agregadosEnEsteCorreo > 0)
+                    {
+                        totalProcesados += agregadosEnEsteCorreo;
                         entryIdsParaMover.Add(entryId);
                     }
                 }
 
-                logger.RegistrarInfo($"Total de registros nuevos efectivamente agregados: {totalProcesados}");
+                logger.RegistrarInfo($"Total de registros nuevos efectivamente agregados a SQL Server: {totalProcesados}");
 
                 if (entryIdsParaMover.Count > 0)
                 {
