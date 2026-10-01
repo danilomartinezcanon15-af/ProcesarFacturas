@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using ProcesarFacturas.Models;
 using ProcesarFacturas.Services;
 
@@ -11,7 +12,7 @@ namespace ProcesarFacturas
         static void Main(string[] args)
         {
             var logger = new LoggerService();
-            logger.RegistrarInfo("=== INICIANDO PROCESO DE FACTURAS (MODO SQL SERVER) ===");
+            logger.RegistrarInfo("=== INICIANDO PROCESO DE FACTURAS (MODO OPTIMIZADO SQL SERVER) ===");
 
             try
             {
@@ -22,6 +23,12 @@ namespace ProcesarFacturas
                 var excelReader = new ExcelReader();
                 var shiptoService = new ShiptoService();
 
+                // 1. Carga de datos existentes a memoria local
+                logger.RegistrarInfo("Cargando catálogo existente desde SQL Server...");
+                HashSet<string> codigosExistentes = shiptoService.ObtenerCodigosExistentes();
+                logger.RegistrarInfo($"Se cargaron {codigosExistentes.Count} registros existentes en memoria.");
+
+                // 2. Descarga y procesamiento de correos
                 logger.RegistrarInfo("Descargando adjuntos de Outlook...");
                 var mensajes = outlookReader.DescargarMensajesConAdjuntos(rutaTemp, logger, incluirProcesados: true);
 
@@ -53,35 +60,44 @@ namespace ProcesarFacturas
                     }
                 }
 
+                // 3. Filtrado en memoria e inserción masiva (bulk insert)
                 int totalProcesados = 0;
                 var entryIdsParaMover = new List<string>();
 
                 foreach (var kvp in mapaEntryIdRegistros)
                 {
                     string entryId = kvp.Key;
-                    var registros = kvp.Value;
+                    var registrosDelCorreo = kvp.Value;
 
-                    int agregadosEnEsteCorreo = 0;
+                    // Filtrar solo los registros que realmente son NUEVOS
+                    var registrosNuevos = registrosDelCorreo
+                        .Where(r => !string.IsNullOrWhiteSpace(r.ShipToParty) && !codigosExistentes.Contains(r.ShipToParty))
+                        .GroupBy(r => r.ShipToParty, StringComparer.OrdinalIgnoreCase)
+                        .Select(g => g.First())
+                        .ToList();
 
-                    foreach (var reg in registros)
+                    if (registrosNuevos.Count > 0)
                     {
-                        // Intentar guardar en la base de datos SQL Server
-                        bool guardado = shiptoService.GuardarNuevoShipto(reg);
-                        if (guardado)
+                        // Inserción en lote masivo a SQL Server
+                        int insertados = shiptoService.GuardarNuevosShiptosMasivo(registrosNuevos);
+
+                        if (insertados > 0)
                         {
-                            agregadosEnEsteCorreo++;
-                        }
-                    }
+                            totalProcesados += insertados;
+                            entryIdsParaMover.Add(entryId);
 
-                    if (agregadosEnEsteCorreo > 0)
-                    {
-                        totalProcesados += agregadosEnEsteCorreo;
-                        entryIdsParaMover.Add(entryId);
+                            // Actualizar catálogo local en memoria
+                            foreach (var reg in registrosNuevos)
+                            {
+                                codigosExistentes.Add(reg.ShipToParty);
+                            }
+                        }
                     }
                 }
 
                 logger.RegistrarInfo($"Total de registros nuevos efectivamente agregados a SQL Server: {totalProcesados}");
 
+                // 4. Mover correos a la carpeta procesada
                 if (entryIdsParaMover.Count > 0)
                 {
                     logger.RegistrarInfo($"Moviendo {entryIdsParaMover.Count} correos válidos a 'Facturas_Procesadas'...");
@@ -92,7 +108,7 @@ namespace ProcesarFacturas
                     logger.RegistrarInfo("No hubo correos con registros nuevos inéditos para mover.");
                 }
 
-                // Limpieza segura de la carpeta Temp
+                // 5. Limpieza de temporales
                 LimpiarCarpetaTemporal(rutaTemp, logger);
 
                 logger.RegistrarInfo("=== PROCESO FINALIZADO CORRECTAMENTE ===");
@@ -109,7 +125,6 @@ namespace ProcesarFacturas
 
             logger.RegistrarInfo("Limpiando archivos temporales...");
 
-            // Forzar liberación de handles de archivos retenidos en memoria
             GC.Collect();
             GC.WaitForPendingFinalizers();
 
@@ -121,7 +136,7 @@ namespace ProcesarFacturas
                 }
                 catch
                 {
-                    // Si OneDrive o un proceso retiene temporalmente un archivo, se ignora
+                    // Manejo de bloqueos por procesos externos
                 }
             }
         }

@@ -32,10 +32,23 @@ namespace ProcesarFacturas.Services
             using (var app = new OutlookApp())
             {
                 var ns = app.GetNamespace("MAPI");
+                
+                // 1. Obtener Bandeja de Entrada (Inbox) y Correo No Deseado (Junk)
                 var inbox = ns.GetDefaultFolder(OlDefaultFolders.olFolderInbox);
+                var junk = ns.GetDefaultFolder(OlDefaultFolders.olFolderJunk);
 
+                // Procesar Bandeja de Entrada
+                logger.RegistrarInfo("Escaneando Bandeja de Entrada...");
                 ProcessFolder(inbox, ns, rutaDestino, resultado, logger, esBandejaEntrada: true);
 
+                // Procesar Correo No Deseado
+                if (junk != null)
+                {
+                    logger.RegistrarInfo("Escaneando Correo No Deseado...");
+                    ProcessFolder(junk, ns, rutaDestino, resultado, logger, esBandejaEntrada: true);
+                }
+
+                // 2. Evaluar carpeta 'Facturas_Procesadas' si se solicita incluir historico
                 if (incluirProcesados)
                 {
                     MAPIFolder? folderProcesados = null;
@@ -73,7 +86,7 @@ namespace ProcesarFacturas.Services
                         string asunto = mail.Subject ?? "";
                         string categorias = mail.Categories ?? "";
 
-                        // Si estamos en Bandeja de Entrada y ya tiene la categoría [Procesado P&G], se omite
+                        // Si ya tiene la categoría [Procesado P&G], se omite
                         if (esBandejaEntrada && categorias.Contains("[Procesado P&G]"))
                         {
                             continue;
@@ -89,7 +102,7 @@ namespace ProcesarFacturas.Services
                         {
                             var adjuntosDescargados = new List<string>();
 
-                            // Extraer archivos directos o inspeccionar correos adjuntos (.msg / Elementos de Outlook)
+                            // Extraer archivos directos o inspeccionar correos adjuntos (.msg)
                             ExtraerAdjuntosDeMail(mail, ns, rutaDestino, adjuntosDescargados, logger);
 
                             if (adjuntosDescargados.Count > 0)
@@ -120,21 +133,20 @@ namespace ProcesarFacturas.Services
                 {
                     string? fileName = attachment.FileName;
 
-                    // CASO 1: Es un correo adjunto (Elemento de Outlook / Embedded Item)
+                    // CASO 1: Es un correo adjunto (.msg / Elemento de Outlook)
                     if (attachment.Type == OlAttachmentType.olEmbeddeditem || (fileName != null && fileName.EndsWith(".msg", StringComparison.OrdinalIgnoreCase)))
                     {
                         string rutaMsgTemp = Path.Combine(rutaDestino, $"{Guid.NewGuid()}_submail.msg");
                         attachment.SaveAsFile(rutaMsgTemp);
 
-                        // Abrir el correo adjunto en memoria
+                        // Abrir el correo adjunto en memoria con NetOffice
                         if (ns.OpenSharedItem(rutaMsgTemp) is MailItem subMail)
                         {
                             logger.RegistrarInfo($"Inspeccionando correo adjunto interno: '{subMail.Subject}'");
-                            // Recursión: Extraer los Excels de este correo interno
                             ExtraerAdjuntosDeMail(subMail, ns, rutaDestino, adjuntosDescargados, logger);
                         }
                     }
-                    // CASO 2: Es un archivo de hoja de cálculo (.xlsx, .xlsm, .xls)
+                    // CASO 2: Es un archivo Excel (.xlsx, .xlsm, .xls)
                     else if (!string.IsNullOrEmpty(fileName))
                     {
                         string ext = Path.GetExtension(fileName).ToLower();
@@ -175,7 +187,7 @@ namespace ProcesarFacturas.Services
                 }
                 catch
                 {
-                    // Si la categoría ya existe en Outlook, continúa sin lanzar excepción
+                    // Si la categoría ya existe en Outlook, continúa
                 }
 
                 var inbox = ns.GetDefaultFolder(OlDefaultFolders.olFolderInbox);
